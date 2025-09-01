@@ -367,11 +367,18 @@ app.get('/following', async (req, res) => {
         const meProfile = await agent.getProfile({ actor: session.handle });
         actorDid = meProfile?.data?.did;
       } catch (e) {
-        // leave actorDid undefined to trigger error below
+        // ignore and fall through to error below
       }
     }
     if (!actorDid) {
-      throw new Error('Unable to resolve current user actor DID for following feed');
+      const errorHtml = `
+    <div class="container">
+      <h1>Following Feed Error</h1>
+      <p class="error-message">Unable to resolve current user actor DID for following feed. Please log in again.</p>
+      <a href="/">Back to login</a>
+    </div>
+      `;
+      return res.send(createHtmlResponse('Error', errorHtml));
     }
     // Fetch the list of users the current user is following
     const followsResponse = await agent.getFollows({ actor: actorDid });
