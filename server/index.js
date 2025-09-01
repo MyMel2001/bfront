@@ -524,6 +524,7 @@ app.get('/dm/conversation', async (req, res) => {
         // ensure the convo entry exists with lastMessage
         const conv = (dmStore[sessionId].conversations || []).find(c => c.id === dmId);
         if (conv) conv.lastMessage = liveMsgs[liveMsgs.length - 1]?.text || conv.lastMessage;
+      }
   }
 
   ensureDmSessionFor(sessionId);
