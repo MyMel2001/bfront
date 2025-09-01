@@ -10,7 +10,79 @@ app.use(express.json());
 // A simple session store. In a real app, use a more robust solution like `express-session` with a database.
 const sessions = {};
 
-// Helper function to create a simple HTML response
+// Live Direct Messages (opt-in) - feature flag and helpers
+const DM_LIVE = (process.env.DM_LIVE === 'true' || process.env.DM_LIVE === '1');
+
+// In-memory DM store (for mock data and live data when available)
+const dmStore = {};
+
+async function fetchLiveConversations(agent) {
+  const candidates = [
+    () => agent.listConversations?.(),
+    () => agent.app?.bsky?.messenger?.listConversations?.(),
+    () => agent.listConversations?.({ limit: 50 }),
+    () => agent.app?.bsky?.messenger?.listConversations?.({ limit: 50 }),
+  ];
+  for (const fn of candidates) {
+    try {
+      const res = await fn();
+      const data = res?.data?.conversations ?? res?.conversations;
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map(item => ({
+          id: item.id || item.cid,
+          with: item.with || item.peerHandle || 'unknown',
+          lastMessage: item.lastMessage?.text || '',
+          unread: typeof item.unread === 'number' ? item.unread : 0
+        }));
+      }
+    } catch (e) {
+      // ignore and try next
+    }
+  }
+  return null;
+}
+
+async function fetchLiveMessages(agent, dmId) {
+  const candidates = [
+    () => agent.getMessages?.({ convo: dmId }),
+    () => agent.app?.bsky?.messenger?.getMessages?.({ convo: dmId }),
+    () => agent.app?.bsky?.messenger?.getMessages?.({ conversationId: dmId }),
+  ];
+  for (const fn of candidates) {
+    try {
+      const res = await fn();
+      const data = res?.data?.messages ?? res?.messages;
+      if (Array.isArray(data) && data.length >= 0) {
+        return data.map(m => ({
+          from: m.from || m.author || 'peer',
+          text: m.text || m.message || '',
+          ts: m.ts || m.createdAt || new Date().toISOString()
+        }));
+      }
+    } catch (e) {
+      // ignore and try next
+    }
+  }
+  return null;
+}
+
+async function liveSendMessage(agent, dmId, text) {
+  const candidates = [
+    () => agent.sendMessage?.({ convo: dmId, text }),
+    () => agent.app?.bsky?.messenger?.sendMessage?.({ convo: dmId, text }),
+  ];
+  for (const fn of candidates) {
+    try {
+      const res = await fn();
+      return res?.data ?? res;
+    } catch (e) {
+      // try next
+    }
+  }
+  return null;
+}
+
+/* Helper function to create a simple HTML response (unchanged, for UI consistency) */
 function createHtmlResponse(title, bodyHtml) {
   return `
   <!DOCTYPE html>
@@ -37,7 +109,7 @@ function createHtmlResponse(title, bodyHtml) {
         border-radius: 8px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         width: 100%;
-        max-width: 600px;
+        max-width: 800px;
       }
       h1, h2, h3 {
         color: #1a202c;
@@ -81,7 +153,7 @@ function createHtmlResponse(title, bodyHtml) {
         margin-top: 0.5rem;
         line-height: 1.5;
         color: #4a5568;
-        white-space: pre-wrap; /* Preserve newlines */
+        white-space: pre-wrap;
       }
       .post-timestamp {
         font-size: 0.8rem;
@@ -94,11 +166,11 @@ function createHtmlResponse(title, bodyHtml) {
         text-align: center;
       }
       a {
-          color: #3b82f6;
-          text-decoration: none;
+        color: #3b82f6;
+        text-decoration: none;
       }
       a:hover {
-          text-decoration: underline;
+        text-decoration: underline;
       }
       .profile-details {
         display: flex;
@@ -145,7 +217,7 @@ app.get('/', (req, res) => {
   res.send(createHtmlResponse('Login to Bluesky', loginHtml));
 });
 
- // Login and redirect to feed
+// Login and redirect to feed
 app.post('/login', async (req, res) => {
   const { identifier, password, service } = req.body;
   const agent = new BskyAgent({ service });
@@ -206,6 +278,7 @@ app.get('/feed', async (req, res) => {
         <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
+          <a href="/dm/inbox?session=${sessionId}">Chats</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
         </nav>
         <form action="/post" method="post" style="margin-bottom: 2rem;">
@@ -246,7 +319,7 @@ app.get('/feed', async (req, res) => {
           return segment.text;
         }).join('');
       }
- 
+
       feedHtml += `
         <div class="feed-post">
           <p>${authorLinkHtml}</p>
@@ -270,98 +343,98 @@ app.get('/feed', async (req, res) => {
 
 // User profile page
 app.get('/profile', async (req, res) => {
-    const sessionId = req.query.session;
-    const sessionData = sessions[sessionId];
-    const identifier = req.query.handle; // Can be handle or DID
+  const sessionId = req.query.session;
+  const sessionData = sessions[sessionId];
+  const identifier = req.query.handle; // Can be handle or DID
 
-    if (!sessionData || !identifier) {
-        return res.redirect('/');
-    }
+  if (!sessionData || !identifier) {
+    return res.redirect('/');
+  }
 
-    const { agent } = sessionData;
+  const { agent } = sessionData;
 
-    try {
-        const profileResponse = await agent.getProfile({ actor: identifier });
-        const profile = profileResponse.data;
+  try {
+    const profileResponse = await agent.getProfile({ actor: identifier });
+    const profile = profileResponse.data;
 
-        let profileHtml = `
-            <div class="container profile-details">
-                <img src="${profile.avatar || 'https://placehold.co/100x100/A0AEC0/ffffff?text=No+Avatar'}" alt="Profile Avatar" class="profile-avatar">
-                <h3>${profile.displayName || profile.handle}</h3>
-                <p>@${profile.handle}</p>
-                <p>${profile.description || 'No description provided.'}</p>
-                <p>Following: ${profile.followsCount} | Followers: ${profile.followersCount}</p>
-                <a href="/feed?session=${sessionId}">Back to Feed</a>
-            </div>
-        `;
+    const profileHtml = `
+      <div class="container profile-details">
+        <img src="${profile.avatar || 'https://placehold.co/100x100/A0AEC0/ffffff?text=No+Avatar'}" alt="Profile Avatar" class="profile-avatar">
+        <h3>${profile.displayName || profile.handle}</h3>
+        <p>@${profile.handle}</p>
+        <p>${profile.description || 'No description provided.'}</p>
+        <p>Following: ${profile.followsCount} | Followers: ${profile.followersCount}</p>
+        <a href="/feed?session=${sessionId}">Back to Feed</a>
+      </div>
+    `;
 
-        res.send(createHtmlResponse('Profile', profileHtml));
+    res.send(createHtmlResponse('Profile', profileHtml));
 
-    } catch (err) {
-        console.error('Profile error:', err);
-        res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not retrieve profile. Please <a href="/feed?session=${sessionId}">try again</a>.</p>`));
-    }
+  } catch (err) {
+    console.error('Profile error:', err);
+    res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not retrieve profile. Please <a href="/feed?session=${sessionId}">try again</a>.</p>`));
+  }
 });
 
 // User search page
 app.get('/search-users', async (req, res) => {
-    const sessionId = req.query.session;
-    const sessionData = sessions[sessionId];
-    const q = req.query.q || '';
+  const sessionId = req.query.session;
+  const sessionData = sessions[sessionId];
+  const q = req.query.q || '';
 
-    if (!sessionData) {
-        return res.redirect('/');
-    }
+  if (!sessionData) {
+    return res.redirect('/');
+  }
 
-    const { agent } = sessionData;
+  const { agent } = sessionData;
 
-    let searchResultsHtml = '';
-    if (q) {
-        try {
-            const searchResponse = await agent.searchActors({ q });
-            const users = searchResponse.data.actors;
-            if (users.length > 0) {
-                for (const user of users) {
-                    searchResultsHtml += `
-                        <div class="search-result">
-                            <p><strong><a href="/profile?session=${sessionId}&handle=${user.handle}">${user.displayName || user.handle}</a></strong></p>
-                            <p>@${user.handle}</p>
-                            <p>${user.description || 'No description provided.'}</p>
-                        </div>
-                    `;
-                }
-            } else {
-                searchResultsHtml = `<p>No users found for "${q}".</p>`;
-            }
-        } catch (err) {
-            console.error('Search error:', err);
-            searchResultsHtml = `<p class="error-message">Error searching for users. Please try again.</p>`;
-        }
-    }
-
-    const searchHtml = `
-        <div class="container">
-            <h1>Find Users</h1>
-            <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
-                <a href="/feed?session=${sessionId}">My Feed</a>
-                <a href="/search-users?session=${sessionId}">Find Users</a>
-            </nav>
-            <form action="/search-users" method="get">
-                <input type="hidden" name="session" value="${sessionId}">
-                <input type="text" name="q" placeholder="Search for users..." value="${q}" required>
-                <button type="submit">Search</button>
-            </form>
-            <div id="search-results" style="margin-top: 2rem;">
-                ${searchResultsHtml}
+  let searchResultsHtml = '';
+  if (q) {
+    try {
+      const searchResponse = await agent.searchActors({ q });
+      const users = searchResponse.data.actors;
+      if (users.length > 0) {
+        for (const user of users) {
+          searchResultsHtml += `
+            <div class="search-result">
+              <p><strong><a href="/profile?session=${sessionId}&handle=${user.handle}">${user.displayName || user.handle}</a></strong></p>
+              <p>@${user.handle}</p>
+              <p>${user.description || 'No description provided.'}</p>
             </div>
-        </div>
-    `;
+          `;
+        }
+      } else {
+        searchResultsHtml = `<p>No users found for "${q}".</p>`;
+      }
+    } catch (err) {
+      console.error('Search error:', err);
+      searchResultsHtml = `<p class="error-message">Error searching for users. Please try again.</p>`;
+    }
+  }
 
-    res.send(createHtmlResponse('Find Users', searchHtml));
+  const searchHtml = `
+    <div class="container">
+      <h1>Find Users</h1>
+      <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+        <a href="/feed?session=${sessionId}">My Feed</a>
+        <a href="/dm/inbox?session=${sessionId}">Find DMs</a>
+        <a href="/search-users?session=${sessionId}">Find Users</a>
+      </nav>
+      <form action="/search-users" method="get">
+        <input type="hidden" name="session" value="${sessionId}">
+        <input type="text" name="q" placeholder="Search for users..." value="${q}" required>
+        <button type="submit">Search</button>
+      </form>
+      <div id="search-results" style="margin-top: 2rem;">
+        ${searchResultsHtml}
+      </div>
+    </div>
+  `;
+
+  res.send(createHtmlResponse('Find Users', searchHtml));
 });
 
-
-// Handle new post creation with user tagging
+// Direct Messages (live data integration scaffold) and mock fallback
 app.post('/post', async (req, res) => {
   const { session, postText } = req.body;
   const sessionData = sessions[session];
@@ -386,31 +459,12 @@ app.post('/post', async (req, res) => {
     console.error('Post error:', err);
     res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not create post. Please <a href="/feed?session=${session}">try again</a>.</p>`));
   }
+
+  // Live Direct Messages (opt-in) - live Bluesky data integration scaffold
+  // Note: Live DM calls are guarded by the DM_LIVE flag, and fall back to mock if not available.
 });
 
-/* Direct Messages (mocked, in-memory store) - simple development scaffold */
-const dmStore = {};
-
-function ensureDmSessionFor(sessionId) {
-  if (!dmStore[sessionId]) {
-    dmStore[sessionId] = {
-      conversations: [
-        { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
-        { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
-      ],
-      messages: {
-        'dm_alice': [
-          { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
-        ],
-        'dm_bob': [
-          { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
-        ]
-      }
-    };
-  }
-}
-
-/* DM Inbox page (mocked) */
+// DM Inbox (live or mock)
 app.get('/dm/inbox', async (req, res) => {
   const sessionId = req.query.session;
   const sessionData = sessions[sessionId];
@@ -419,10 +473,22 @@ app.get('/dm/inbox', async (req, res) => {
     return res.redirect('/');
   }
 
-  ensureDmSessionFor(sessionId);
-  const convoList = dmStore[sessionId]?.conversations || [];
+  // If live mode is enabled and agent exists, try to refresh from Bluesky
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveConvos = await fetchLiveConversations(sessionData.agent);
+      if (Array.isArray(liveConvos) && liveConvos.length > 0) {
+        dmStore[sessionId] = { conversations: liveConvos, messages: dmStore[sessionId]?.messages || {} };
+      }
+    } catch (e) {
+      // Fall back to mock if live fetch fails
+    }
+  }
 
-  const convoHtml = convoList.map(c => 
+  // Ensure a default structure exists for rendering
+  ensureDmSessionFor(sessionId);
+  const convoList = Array.isArray(dmStore[sessionId]?.conversations) ? dmStore[sessionId].conversations : [];
+  const convoHtml = convoList.map(c =>
     '<div class="dm-item">' +
       '<a href="/dm/conversation?session=' + sessionId + '&dm_id=' + c.id + '">' +
         c.with +
@@ -435,7 +501,7 @@ app.get('/dm/inbox', async (req, res) => {
     <div class="container">
       <h1>Direct Messages</h1>
       <div id="dm-list">
-` + convoHtml + `
+${convoHtml}
       </div>
       <div style="margin-top:1rem;">
         <a href="/feed?session=${sessionId}">Back to Feed</a>
@@ -446,7 +512,7 @@ app.get('/dm/inbox', async (req, res) => {
   res.send(createHtmlResponse('Direct Messages', page));
 });
 
-/* DM conversation view (mocked) */
+// DM conversation view (mock or live)
 app.get('/dm/conversation', async (req, res) => {
   const sessionId = req.query.session;
   const dmId = req.query.dm_id;
@@ -456,11 +522,28 @@ app.get('/dm/conversation', async (req, res) => {
     return res.redirect('/');
   }
 
+  // If live mode is enabled, attempt to fetch live messages for this convo
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveMsgs = await fetchLiveMessages(sessionData.agent, dmId);
+      if (Array.isArray(liveMsgs) && liveMsgs.length > 0) {
+        dmStore[sessionId] = dmStore[sessionId] || { conversations: [], messages: {} };
+        dmStore[sessionId].messages = dmStore[sessionId].messages || {};
+        dmStore[sessionId].messages[dmId] = liveMsgs;
+        // ensure the convo entry exists with lastMessage
+        const conv = (dmStore[sessionId].conversations || []).find(c => c.id === dmId);
+        if (conv) conv.lastMessage = liveMsgs[liveMsgs.length - 1]?.text || conv.lastMessage;
+      }
+    } catch (e) {
+      // fall back to mock on error
+    }
+  }
+
   ensureDmSessionFor(sessionId);
   const messages = dmStore[sessionId].messages[dmId] || [];
   const other = dmStore[sessionId].conversations.find(c => c.id === dmId)?.with || 'unknown';
 
-  const chatHtml = messages.map(m => 
+  const chatHtml = messages.map(m =>
     '<div class="dm-row" style="margin:0.5rem 0; text-align:' + (m.from === 'me' ? 'right' : 'left') + ';">' +
       '<span style="display:inline-block; padding:0.5rem 0.75rem; border-radius:6px; background:' +
       (m.from === 'me' ? '#d1fae5' : '#f1f5f9') +
@@ -473,7 +556,7 @@ app.get('/dm/conversation', async (req, res) => {
     <div class="container">
       <h1>DM with ${other}</h1>
       <div id="dm-messages" style="max-height:60vh; overflow:auto; border:1px solid #ddd; padding:1rem; margin-bottom:1rem;">
-` + chatHtml + `
+${chatHtml}
       </div>
       <form action="/dm/send" method="post" style="display:flex; gap:0.5rem;">
         <input type="hidden" name="session" value="${sessionId}">
@@ -493,13 +576,32 @@ app.get('/dm/conversation', async (req, res) => {
   res.send(createHtmlResponse(`DM with ${other}`, page));
 });
 
-/* DM send (mock) */
+// DM send (live or mock)
 app.post('/dm/send', async (req, res) => {
   const { session, dm_id, text } = req.body;
   const sessionData = sessions[session];
   if (!sessionData || !dm_id || !text) return res.redirect('/');
 
   ensureDmSessionFor(session);
+  // Try live send if enabled
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveResult = await liveSendMessage(sessionData.agent, dm_id, text);
+      if (liveResult) {
+        dmStore[session] = dmStore[session] || { conversations: [], messages: {} };
+        dmStore[session].messages = dmStore[session].messages || {};
+        dmStore[session].messages[dm_id] = dmStore[session].messages[dm_id] || [];
+        dmStore[session].messages[dm_id].push({ from: 'me', text, ts: new Date().toISOString() });
+        const conv = (dmStore[session].conversations || []).find(c => c.id === dm_id);
+        if (conv) conv.lastMessage = text;
+        return res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
+      }
+    } catch (e) {
+      // fall back to mock on error
+    }
+  }
+
+  // Fallback to mock path
   if (!dmStore[session].messages[dm_id]) {
     dmStore[session].conversations.push({ id: dm_id, with: 'unknown', lastMessage: '' , unread: 0 });
     dmStore[session].messages[dm_id] = [];
@@ -511,6 +613,27 @@ app.post('/dm/send', async (req, res) => {
 
   res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
 });
+
 app.listen(PORT, () => {
   console.log(`Bluesky web client listening on http://localhost:${PORT}`);
 });
+
+// Simple in-file helper to ensure a DM session structure exists
+function ensureDmSessionFor(sessionId) {
+  if (!dmStore[sessionId]) {
+    dmStore[sessionId] = {
+      conversations: [
+        { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
+        { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
+      ],
+      messages: {
+        'dm_alice': [
+          { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
+        ],
+        'dm_bob': [
+          { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
+        ]
+      }
+    };
+  }
+}
