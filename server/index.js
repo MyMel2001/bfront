@@ -145,17 +145,31 @@ app.get('/', (req, res) => {
   res.send(createHtmlResponse('Login to Bluesky', loginHtml));
 });
 
-// Login and redirect to feed
+ // Login and redirect to feed
 app.post('/login', async (req, res) => {
   const { identifier, password, service } = req.body;
   const agent = new BskyAgent({ service });
 
   try {
-    const session = await agent.login({ identifier, password });
-    
+    const loginResult = await agent.login({ identifier, password });
+    // Try to resolve current user DID from the login result
+    let resolvedDid = null;
+    try {
+      if (loginResult && loginResult.handle) {
+        const meProfile = await agent.getProfile({ actor: loginResult.handle });
+        resolvedDid = meProfile?.data?.did;
+      }
+    } catch (e) {
+      // ignore resolution errors
+    }
+    // Attach DID to login result so downstream routes can read session.did
+    if (typeof loginResult === 'object') {
+      loginResult.did = resolvedDid;
+    }
+
     // Store session and redirect
     const sessionId = Math.random().toString(36).substring(7);
-    sessions[sessionId] = { agent, session };
+    sessions[sessionId] = { agent, session: loginResult };
     res.redirect(`/feed?session=${sessionId}`);
   } catch (err) {
     console.error('Login error:', err);
