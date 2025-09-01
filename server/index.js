@@ -205,24 +205,40 @@ app.get('/feed', async (req, res) => {
 
     // Render each post
     for (const item of feedPosts) {
-      const post = item.post;
+      const post = item?.post ?? item;
+      if (!post) continue;
       // Convert post text to display with mentions as links
-      const formattedText = post.record.text;
-      const rt = new RichText({ text: formattedText });
-      await rt.detectFacets(agent);
-      const textWithMentions = rt.segments().map(segment => {
+      const formattedText = post?.record?.text ?? '';
+      let textWithMentions = '';
+      let authorLinkHtml = '';
+      if (post?.author) {
+        const authorHandle = post.author.handle;
+        const authorDisplay = post.author.displayName || post.author.handle;
+        authorLinkHtml = `<a href="/profile?session=${sessionId}&handle=${authorHandle}">${authorDisplay}</a>`;
+      }
+      if (formattedText) {
+        const rt = new RichText({ text: formattedText });
+        try {
+          await rt.detectFacets(agent);
+        } catch (e) {
+          // Ignore facet resolution errors
+        }
+        const segmentsRaw = typeof rt.segments === 'function' ? rt.segments() : [];
+        const segments = Array.isArray(segmentsRaw) ? segmentsRaw : Array.from(segmentsRaw || []);
+        textWithMentions = segments.map(segment => {
           if (segment.isMention()) {
-              const profileLink = `/profile?session=${sessionId}&handle=${segment.mention.did}`;
-              return `<a href="${profileLink}" class="post-author">${segment.text}</a>`;
+            const profileLink = `/profile?session=${sessionId}&handle=${segment.mention.did}`;
+            return `<a href="${profileLink}" class="post-author">${segment.text}</a>`;
           }
           return segment.text;
-      }).join('');
-
+        }).join('');
+      }
+ 
       feedHtml += `
         <div class="feed-post">
-          <p><a href="/profile?session=${sessionId}&handle=${post.author.handle}">${post.author.displayName || post.author.handle}</a></p>
+          <p>${authorLinkHtml}</p>
           <p class="post-text">${textWithMentions}</p>
-          <p class="post-timestamp">${new Date(post.record.createdAt).toLocaleString()}</p>
+          <p class="post-timestamp">${new Date(post?.record?.createdAt).toLocaleString()}</p>
         </div>
       `;
     }
@@ -376,7 +392,9 @@ app.get('/following', async (req, res) => {
             const formattedText = post.record.text;
             const rt = new RichText({ text: formattedText });
             await rt.detectFacets(agent);
-            const textWithMentions = rt.segments().map(segment => {
+            const segmentsRaw = typeof rt.segments === 'function' ? rt.segments() : [];
+            const segments = Array.isArray(segmentsRaw) ? segmentsRaw : Array.from(segmentsRaw || []);
+            const textWithMentions = segments.map(segment => {
                 if (segment.isMention()) {
                     const profileLink = `/profile?session=${sessionId}&handle=${segment.mention.did}`;
                     return `<a href="${profileLink}" class="post-author">${segment.text}</a>`;
