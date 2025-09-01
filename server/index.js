@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 // Configuration
-const BASE_URL = process.env.BLUESKY_BASE_URL || 'https://public.bsky.social';
+const BLUESKY_API_BASE_URL = process.env.BLUESKY_API_BASE_URL || process.env.BLUESKY_BASE_URL || 'https://public.bsky.social';
 const LOGIN_BASE_URL = process.env.LOGIN_BASE_URL || null;
 
 // Middlewares
@@ -24,7 +24,7 @@ app.use('/', express.static(path.join(__dirname, '../public')));
 app.post('/api/login', async (req, res) => {
   try {
     const { identifier, password, baseUrl } = req.body;
-    const authBase = baseUrl || (LOGIN_BASE_URL || BASE_URL);
+    const authBase = baseUrl || (LOGIN_BASE_URL || BLUESKY_API_BASE_URL);
     const loginUrl = new URL('/xrpc/com.atproto.server.createSession', authBase);
     const init = {
       method: 'POST',
@@ -59,7 +59,7 @@ app.use('/api/*', async (req, res) => {
     if (!upstreamPath) {
       return res.status(400).json({ error: 'invalid_endpoint' });
     }
-    const target = new URL('/xrpc/' + upstreamPath, BASE_URL);
+    const target = new URL('/xrpc/' + upstreamPath, BLUESKY_API_BASE_URL);
     console.info('[proxy] forwarding', req.method, req.url, 'to', target.toString());
 
     // Build proxied request
@@ -96,7 +96,7 @@ app.use('/api/*', async (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok', base: BASE_URL }));
+app.get('/health', (req, res) => res.json({ status: 'ok', base: BLUESKY_API_BASE_URL }));
 
 // SPA fallback
 app.get('*', (req, res) => {
