@@ -360,8 +360,21 @@ app.get('/following', async (req, res) => {
   const { agent, session } = sessionData;
 
   try {
+    // Determine the current user's actor DID
+    let actorDid = session.did;
+    if (!actorDid && session.handle) {
+      try {
+        const meProfile = await agent.getProfile({ actor: session.handle });
+        actorDid = meProfile?.data?.did;
+      } catch (e) {
+        // leave actorDid undefined to trigger error below
+      }
+    }
+    if (!actorDid) {
+      throw new Error('Unable to resolve current user actor DID for following feed');
+    }
     // Fetch the list of users the current user is following
-    const followsResponse = await agent.getFollows({ actor: session.did });
+    const followsResponse = await agent.getFollows({ actor: actorDid });
     const follows = followsResponse.data.follows.map(follow => follow.did);
 
     // Fetch the "Firehose" and filter posts from followed users.
