@@ -184,7 +184,7 @@ app.get('/feed', async (req, res) => {
   try {
     // Get the main feed for the logged-in user
     const feedResponse = await agent.getTimeline();
-    const feedPosts = feedResponse.data.feed;
+    const feedPosts = Array.isArray(feedResponse?.data?.feed) ? feedResponse.data.feed : [];
 
     let feedHtml = `
       <div class="container">
