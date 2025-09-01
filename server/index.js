@@ -206,7 +206,6 @@ app.get('/feed', async (req, res) => {
         <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
-          <a href="/following?session=${sessionId}">Following Feed</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
         </nav>
         <form action="/post" method="post" style="margin-bottom: 2rem;">
@@ -345,7 +344,6 @@ app.get('/search-users', async (req, res) => {
             <h1>Find Users</h1>
             <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
                 <a href="/feed?session=${sessionId}">My Feed</a>
-                <a href="/following?session=${sessionId}">Following Feed</a>
                 <a href="/search-users?session=${sessionId}">Find Users</a>
             </nav>
             <form action="/search-users" method="get">
@@ -360,104 +358,6 @@ app.get('/search-users', async (req, res) => {
     `;
 
     res.send(createHtmlResponse('Find Users', searchHtml));
-});
-
-// New endpoint for the Following Feed
-app.get('/following', async (req, res) => {
-  const sessionId = req.query.session;
-  const sessionData = sessions[sessionId];
-
-  if (!sessionData) {
-    return res.redirect('/');
-  }
-
-  const { agent, session } = sessionData;
-
-  try {
-    // Determine the current user's actor DID
-    let actorDid = session.did;
-    if (!actorDid && session.handle) {
-      try {
-        const meProfile = await agent.getProfile({ actor: session.handle });
-        actorDid = meProfile?.data?.did;
-      } catch (e) {
-        // ignore and fall through to error below
-      }
-    }
-    if (!actorDid) {
-      const errorHtml = `
-    <div class="container">
-      <h1>Following Feed Error</h1>
-      <p class="error-message">Unable to resolve current user actor DID for following feed. Please log in again.</p>
-      <a href="/">Back to login</a>
-    </div>
-      `;
-      return res.send(createHtmlResponse('Error', errorHtml));
-    }
-    // Fetch the list of users the current user is following
-    const followsResponse = await agent.getFollows({ actor: actorDid });
-    const follows = followsResponse.data.follows.map(follow => follow.did);
-
-    // Fetch the "Firehose" and filter posts from followed users.
-    // NOTE: This is a simplified approach for demonstration and is not scalable.
-    // A real application would use a custom feed generator or a more efficient method.
-    const firehoseResponse = await agent.getTimeline({ algorithm: 'reverse-chronological' });
-    const firehosePosts = firehoseResponse.data.feed;
-
-    // Filter posts from followed users
-    const followingPosts = firehosePosts.filter(item => follows.includes(item.post.author.did));
-
-    let feedHtml = `
-      <div class="container">
-        <h1>Following Feed</h1>
-        <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
-        <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
-          <a href="/feed?session=${sessionId}">My Feed</a>
-          <a href="/search-users?session=${sessionId}">Find Users</a>
-        </nav>
-        <div id="feed-container">
-    `;
-
-    // Render each filtered post
-    if (followingPosts.length > 0) {
-        for (const item of followingPosts) {
-            const post = item.post;
-            const formattedText = post.record.text;
-            const rt = new RichText({ text: formattedText });
-            await rt.detectFacets(agent);
-            const segmentsRaw = typeof rt.segments === 'function' ? rt.segments() : [];
-            const segments = Array.isArray(segmentsRaw) ? segmentsRaw : Array.from(segmentsRaw || []);
-            const textWithMentions = segments.map(segment => {
-                if (segment.isMention()) {
-                    const profileLink = `/profile?session=${sessionId}&handle=${segment.mention.did}`;
-                    return `<a href="${profileLink}" class="post-author">${segment.text}</a>`;
-                }
-                return segment.text;
-            }).join('');
-
-            feedHtml += `
-              <div class="feed-post">
-                <p><a href="/profile?session=${sessionId}&handle=${post.author.handle}">${post.author.displayName || post.author.handle}</a></p>
-                <p class="post-text">${textWithMentions}</p>
-                <p class="post-timestamp">${new Date(post.record.createdAt).toLocaleString()}</p>
-              </div>
-            `;
-        }
-    } else {
-        feedHtml += `<p>No posts from users you're following yet. Find some people to follow!</p>`;
-    }
-
-    feedHtml += `
-        </div>
-      </div>
-    `;
-
-    res.send(createHtmlResponse('Following Feed', feedHtml));
-
-  } catch (err) {
-    console.error('Following feed error:', err);
-    res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not retrieve following feed. Please <a href="/">log in again</a>.</p>`));
-  }
 });
 
 
@@ -488,6 +388,129 @@ app.post('/post', async (req, res) => {
   }
 });
 
+/* Direct Messages (mocked, in-memory store) - simple development scaffold */
+const dmStore = {};
+
+function ensureDmSessionFor(sessionId) {
+  if (!dmStore[sessionId]) {
+    dmStore[sessionId] = {
+      conversations: [
+        { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
+        { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
+      ],
+      messages: {
+        'dm_alice': [
+          { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
+        ],
+        'dm_bob': [
+          { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
+        ]
+      }
+    };
+  }
+}
+
+/* DM Inbox page (mocked) */
+app.get('/dm/inbox', async (req, res) => {
+  const sessionId = req.query.session;
+  const sessionData = sessions[sessionId];
+
+  if (!sessionData) {
+    return res.redirect('/');
+  }
+
+  ensureDmSessionFor(sessionId);
+  const convoList = dmStore[sessionId]?.conversations || [];
+
+  const convoHtml = convoList.map(c => 
+    '<div class="dm-item">' +
+      '<a href="/dm/conversation?session=' + sessionId + '&dm_id=' + c.id + '">' +
+        c.with +
+      '</a> - ' + c.lastMessage +
+      (c.unread > 0 ? ' (new)' : '') +
+    '</div>'
+  ).join('');
+
+  const page = `
+    <div class="container">
+      <h1>Direct Messages</h1>
+      <div id="dm-list">
+` + convoHtml + `
+      </div>
+      <div style="margin-top:1rem;">
+        <a href="/feed?session=${sessionId}">Back to Feed</a>
+      </div>
+    </div>
+  `;
+
+  res.send(createHtmlResponse('Direct Messages', page));
+});
+
+/* DM conversation view (mocked) */
+app.get('/dm/conversation', async (req, res) => {
+  const sessionId = req.query.session;
+  const dmId = req.query.dm_id;
+  const sessionData = sessions[sessionId];
+
+  if (!sessionData || !dmId) {
+    return res.redirect('/');
+  }
+
+  ensureDmSessionFor(sessionId);
+  const messages = dmStore[sessionId].messages[dmId] || [];
+  const other = dmStore[sessionId].conversations.find(c => c.id === dmId)?.with || 'unknown';
+
+  const chatHtml = messages.map(m => 
+    '<div class="dm-row" style="margin:0.5rem 0; text-align:' + (m.from === 'me' ? 'right' : 'left') + ';">' +
+      '<span style="display:inline-block; padding:0.5rem 0.75rem; border-radius:6px; background:' +
+      (m.from === 'me' ? '#d1fae5' : '#f1f5f9') +
+      '; border:1px solid #e5e7eb;">' +
+      (m.from === 'me' ? 'You' : other) + ': ' + m.text +
+      '</span></div>'
+  ).join('');
+
+  const page = `
+    <div class="container">
+      <h1>DM with ${other}</h1>
+      <div id="dm-messages" style="max-height:60vh; overflow:auto; border:1px solid #ddd; padding:1rem; margin-bottom:1rem;">
+` + chatHtml + `
+      </div>
+      <form action="/dm/send" method="post" style="display:flex; gap:0.5rem;">
+        <input type="hidden" name="session" value="${sessionId}">
+        <input type="hidden" name="dm_id" value="${dmId}">
+        <input style="flex:1" type="text" name="text" placeholder="Type a message..." required>
+        <button type="submit">Send</button>
+      </form>
+      <div style="margin-top:1rem;">
+        <a href="/dm/inbox?session=${sessionId}">Back to Inbox</a>
+      </div>
+    </div>
+  `;
+  // mark as read
+  const conv = dmStore[sessionId].conversations.find(c => c.id === dmId);
+  if (conv && conv.unread > 0) conv.unread = 0;
+
+  res.send(createHtmlResponse(`DM with ${other}`, page));
+});
+
+/* DM send (mock) */
+app.post('/dm/send', async (req, res) => {
+  const { session, dm_id, text } = req.body;
+  const sessionData = sessions[session];
+  if (!sessionData || !dm_id || !text) return res.redirect('/');
+
+  ensureDmSessionFor(session);
+  if (!dmStore[session].messages[dm_id]) {
+    dmStore[session].conversations.push({ id: dm_id, with: 'unknown', lastMessage: '' , unread: 0 });
+    dmStore[session].messages[dm_id] = [];
+  }
+  dmStore[session].messages[dm_id].push({ from: 'me', text, ts: new Date().toISOString() });
+
+  const conv = dmStore[session].conversations.find(c => c.id === dm_id);
+  if (conv) conv.lastMessage = text;
+
+  res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
+});
 app.listen(PORT, () => {
   console.log(`Bluesky web client listening on http://localhost:${PORT}`);
 });
