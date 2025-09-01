@@ -231,7 +231,7 @@ app.get('/feed', async (req, res) => {
     let feedHtml = `
       <div class="container">
         <h1>Bluesky Feed</h1>
-        <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
+        <h2>Welcome!</h2>
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
