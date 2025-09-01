@@ -1,6 +1,7 @@
 // Minimal frontend app.js for Bluesky Alt scaffold (login-enabled)
 
 (function(){
+  const BASE_URL = 'https://public.bsky.social';
   const sections = {
     feeds: document.getElementById('feeds'),
     posts: document.getElementById('posts'),
@@ -55,8 +56,8 @@
     if (!identifier || !password) { showLoginStatus('Please enter identifier and password'); return; }
     if (loginBtnEl) loginBtnEl.disabled = true;
     showLoginStatus('Logging in...');
-  
-    // Attempt frontend AT Protocol API login first
+
+    // Try ATProto frontend login first
     let token = '';
     let libBaseUrl = baseUrl;
     try {
@@ -80,7 +81,7 @@
       // library not available or not usable; fall back to server path
       console.info('ATProto frontend login not available, falling back to server login:', err?.toString?.());
     }
-  
+
     if (token) {
       localStorage.setItem('token', token);
       localStorage.setItem('baseUrl', libBaseUrl || BASE_URL);
@@ -90,7 +91,7 @@
       if (loginBtnEl) loginBtnEl.disabled = false;
       return;
     }
-  
+
     // Fallback to existing server-side login
     try {
       const res = await fetch('/api/login', {
@@ -107,7 +108,7 @@
       const token2 = data.token;
       if (token2) {
         localStorage.setItem('token', token2);
-        localStorage.setItem('baseUrl', data?.baseUrl || baseUrl || 'https://public.bsky.social');
+        localStorage.setItem('baseUrl', data?.baseUrl || baseUrl || BASE_URL);
         showLoginStatus('Login successful');
         fetchFeed();
         show('feeds');
@@ -131,12 +132,11 @@
 
   // Init helpers
   function loadConfig(){
-    const base = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
+    const base = localStorage.getItem('baseUrl') || BASE_URL;
     const token = localStorage.getItem('token') || '';
     const loginBase = document.getElementById('loginBaseUrl');
     if (loginBase) loginBase.value = base;
     const loginIdentifier = document.getElementById('loginIdentifier');
-    // We won't prefill identifier for security
     if (loginIdentifier) loginIdentifier.value = '';
     const loginPassword = document.getElementById('loginPassword');
     if (loginPassword) loginPassword.value = '';
@@ -326,7 +326,7 @@
   function renderPDS(){
     const baseUrlInput = document.getElementById('baseUrl');
     if (baseUrlInput){
-      baseUrlInput.value = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
+      baseUrlInput.value = localStorage.getItem('baseUrl') || BASE_URL;
     }
   }
 
@@ -340,4 +340,4 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') fetchFeed();
   });
-})()
+})();
