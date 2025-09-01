@@ -621,19 +621,26 @@ app.listen(PORT, () => {
 // Simple in-file helper to ensure a DM session structure exists
 function ensureDmSessionFor(sessionId) {
   if (!dmStore[sessionId]) {
-    dmStore[sessionId] = {
-      conversations: [
-        { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
-        { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
-      ],
-      messages: {
-        'dm_alice': [
-          { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
+    if (typeof DM_LIVE !== 'undefined' && DM_LIVE) {
+      dmStore[sessionId] = {
+        conversations: [],
+        messages: {}
+      };
+    } else {
+      dmStore[sessionId] = {
+        conversations: [
+          { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
+          { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
         ],
-        'dm_bob': [
-          { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
-        ]
-      }
-    };
+        messages: {
+          'dm_alice': [
+            { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
+          ],
+          'dm_bob': [
+            { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
+          ]
+        }
+      };
+    }
   }
 }
