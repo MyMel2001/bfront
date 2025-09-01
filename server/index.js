@@ -1,3 +1,4 @@
+
 const express = require('express');
 const { BskyAgent, RichText } = require('@atproto/api');
 const path = require('path');
@@ -10,11 +11,6 @@ app.use(express.json());
 // A simple session store. In a real app, use a more robust solution like `express-session` with a database.
 const sessions = {};
 
-// Live Direct Messages - feature flag and helpers
-const DM_LIVE = true;
-
-// In-memory DM store (for mock data and live data when available)
-const dmStore = {};
 
 async function fetchLiveConversations(agent) {
   const candidates = [
@@ -37,46 +33,6 @@ async function fetchLiveConversations(agent) {
       }
     } catch (e) {
       // ignore and try next
-    }
-  }
-  return null;
-}
-
-async function fetchLiveMessages(agent, dmId) {
-  const candidates = [
-    () => agent.getMessages?.({ convo: dmId }),
-    () => agent.app?.bsky?.messenger?.getMessages?.({ convo: dmId }),
-    () => agent.app?.bsky?.messenger?.getMessages?.({ conversationId: dmId }),
-  ];
-  for (const fn of candidates) {
-    try {
-      const res = await fn();
-      const data = res?.data?.messages ?? res?.messages;
-      if (Array.isArray(data) && data.length >= 0) {
-        return data.map(m => ({
-          from: m.from || m.author || 'peer',
-          text: m.text || m.message || '',
-          ts: m.ts || m.createdAt || new Date().toISOString()
-        }));
-      }
-    } catch (e) {
-      // ignore and try next
-    }
-  }
-  return null;
-}
-
-async function liveSendMessage(agent, dmId, text) {
-  const candidates = [
-    () => agent.sendMessage?.({ convo: dmId, text }),
-    () => agent.app?.bsky?.messenger?.sendMessage?.({ convo: dmId, text }),
-  ];
-  for (const fn of candidates) {
-    try {
-      const res = await fn();
-      return res?.data ?? res;
-    } catch (e) {
-      // try next
     }
   }
   return null;
@@ -278,7 +234,6 @@ app.get('/feed', async (req, res) => {
         <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
-          <a href="/dm/inbox?session=${sessionId}">Chats</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
         </nav>
         <form action="/post" method="post" style="margin-bottom: 2rem;">
@@ -417,7 +372,6 @@ app.get('/search-users', async (req, res) => {
       <h1>Find Users</h1>
       <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
         <a href="/feed?session=${sessionId}">My Feed</a>
-        <a href="/dm/inbox?session=${sessionId}">Find DMs</a>
         <a href="/search-users?session=${sessionId}">Find Users</a>
       </nav>
       <form action="/search-users" method="get">
@@ -460,187 +414,11 @@ app.post('/post', async (req, res) => {
     res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not create post. Please <a href="/feed?session=${session}">try again</a>.</p>`));
   }
 
-  // Live Direct Messages (opt-in) - live Bluesky data integration scaffold
-  // Note: Live DM calls are guarded by the DM_LIVE flag, and fall back to mock if not available.
 });
 
-// DM Inbox (live or mock)
-app.get('/dm/inbox', async (req, res) => {
-  const sessionId = req.query.session;
-  const sessionData = sessions[sessionId];
 
-  if (!sessionData) {
-    return res.redirect('/');
-  }
 
-  // If live mode is enabled and agent exists, try to refresh from Bluesky
-  if (DM_LIVE && sessionData.agent) {
-    try {
-      const liveConvos = await fetchLiveConversations(sessionData.agent);
-      if (Array.isArray(liveConvos) && liveConvos.length > 0) {
-        dmStore[sessionId] = { conversations: liveConvos, messages: dmStore[sessionId]?.messages || {} };
-      }
-    } catch (e) {
-      // Fall back to mock if live fetch fails
-    }
-  }
-
-  // Ensure a default structure exists for rendering
-  ensureDmSessionFor(sessionId);
-  const convoList = Array.isArray(dmStore[sessionId]?.conversations) ? dmStore[sessionId].conversations : [];
-  const convoHtml = convoList.map(c =>
-    '<div class="dm-item">' +
-      '<a href="/dm/conversation?session=' + sessionId + '&dm_id=' + c.id + '">' +
-        c.with +
-      '</a> - ' + c.lastMessage +
-      (c.unread > 0 ? ' (new)' : '') +
-    '</div>'
-  ).join('');
-
-  const page = `
-    <div class="container">
-      <h1>Direct Messages</h1>
-      <div id="dm-list">
-${convoHtml}
-      </div>
-      <div style="margin-top:1rem;">
-        <a href="/feed?session=${sessionId}">Back to Feed</a>
-      </div>
-    </div>
-  `;
-
-  res.send(createHtmlResponse('Direct Messages', page));
-});
-
-// DM conversation view (mock or live)
-app.get('/dm/conversation', async (req, res) => {
-  const sessionId = req.query.session;
-  const dmId = req.query.dm_id;
-  const sessionData = sessions[sessionId];
-
-  if (!sessionData || !dmId) {
-    return res.redirect('/');
-  }
-
-  // If live mode is enabled, attempt to fetch live messages for this convo
-  if (DM_LIVE && sessionData.agent) {
-    try {
-      const liveMsgs = await fetchLiveMessages(sessionData.agent, dmId);
-      if (Array.isArray(liveMsgs) && liveMsgs.length > 0) {
-        dmStore[sessionId] = dmStore[sessionId] || { conversations: [], messages: {} };
-        dmStore[sessionId].messages = dmStore[sessionId].messages || {};
-        dmStore[sessionId].messages[dmId] = liveMsgs;
-        // ensure the convo entry exists with lastMessage
-        const conv = (dmStore[sessionId].conversations || []).find(c => c.id === dmId);
-        if (conv) conv.lastMessage = liveMsgs[liveMsgs.length - 1]?.text || conv.lastMessage;
-      }
-    } catch (e) {
-      // fall back to mock on error
-    }
-  }
-
-  ensureDmSessionFor(sessionId);
-  const messages = dmStore[sessionId].messages[dmId] || [];
-  const other = dmStore[sessionId].conversations.find(c => c.id === dmId)?.with || 'unknown';
-
-  const chatHtml = messages.map(m =>
-    '<div class="dm-row" style="margin:0.5rem 0; text-align:' + (m.from === 'me' ? 'right' : 'left') + ';">' +
-      '<span style="display:inline-block; padding:0.5rem 0.75rem; border-radius:6px; background:' +
-      (m.from === 'me' ? '#d1fae5' : '#f1f5f9') +
-      '; border:1px solid #e5e7eb;">' +
-      (m.from === 'me' ? 'You' : other) + ': ' + m.text +
-      '</span></div>'
-  ).join('');
-
-  const page = `
-    <div class="container">
-      <h1>DM with ${other}</h1>
-      <div id="dm-messages" style="max-height:60vh; overflow:auto; border:1px solid #ddd; padding:1rem; margin-bottom:1rem;">
-${chatHtml}
-      </div>
-      <form action="/dm/send" method="post" style="display:flex; gap:0.5rem;">
-        <input type="hidden" name="session" value="${sessionId}">
-        <input type="hidden" name="dm_id" value="${dmId}">
-        <input style="flex:1" type="text" name="text" placeholder="Type a message..." required>
-        <button type="submit">Send</button>
-      </form>
-      <div style="margin-top:1rem;">
-        <a href="/dm/inbox?session=${sessionId}">Back to Inbox</a>
-      </div>
-    </div>
-  `;
-  // mark as read
-  const conv = dmStore[sessionId].conversations.find(c => c.id === dmId);
-  if (conv && conv.unread > 0) conv.unread = 0;
-
-  res.send(createHtmlResponse(`DM with ${other}`, page));
-});
-
-// DM send (live or mock)
-app.post('/dm/send', async (req, res) => {
-  const { session, dm_id, text } = req.body;
-  const sessionData = sessions[session];
-  if (!sessionData || !dm_id || !text) return res.redirect('/');
-
-  ensureDmSessionFor(session);
-  // Try live send if enabled
-  if (DM_LIVE && sessionData.agent) {
-    try {
-      const liveResult = await liveSendMessage(sessionData.agent, dm_id, text);
-      if (liveResult) {
-        dmStore[session] = dmStore[session] || { conversations: [], messages: {} };
-        dmStore[session].messages = dmStore[session].messages || {};
-        dmStore[session].messages[dm_id] = dmStore[session].messages[dm_id] || [];
-        dmStore[session].messages[dm_id].push({ from: 'me', text, ts: new Date().toISOString() });
-        const conv = (dmStore[session].conversations || []).find(c => c.id === dm_id);
-        if (conv) conv.lastMessage = text;
-        return res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
-      }
-    } catch (e) {
-      // fall back to mock on error
-    }
-  }
-
-  // Fallback to mock path
-  if (!dmStore[session].messages[dm_id]) {
-    dmStore[session].conversations.push({ id: dm_id, with: 'unknown', lastMessage: '' , unread: 0 });
-    dmStore[session].messages[dm_id] = [];
-  }
-  dmStore[session].messages[dm_id].push({ from: 'me', text, ts: new Date().toISOString() });
-
-  const conv = dmStore[session].conversations.find(c => c.id === dm_id);
-  if (conv) conv.lastMessage = text;
-
-  res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
-});
 
 app.listen(PORT, () => {
   console.log(`Bluesky web client listening on http://localhost:${PORT}`);
 });
-
-// Simple in-file helper to ensure a DM session structure exists
-function ensureDmSessionFor(sessionId) {
-  if (!dmStore[sessionId]) {
-    if (typeof DM_LIVE !== 'undefined' && DM_LIVE) {
-      dmStore[sessionId] = {
-        conversations: [],
-        messages: {}
-      };
-    } else {
-      dmStore[sessionId] = {
-        conversations: [
-          { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
-          { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
-        ],
-        messages: {
-          'dm_alice': [
-            { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
-          ],
-          'dm_bob': [
-            { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
-          ]
-        }
-      };
-    }
-  }
-}
