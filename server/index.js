@@ -413,7 +413,6 @@ app.get('/following', async (req, res) => {
         <h2>Welcome, <a href="/profile?session=${sessionId}">${session.handle}</a>!</h2>
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
-          <a href="/following?session=${sessionId}">Following Feed</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
         </nav>
         <div id="feed-container">
