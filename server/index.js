@@ -10,6 +10,8 @@ app.use(express.json());
 // A simple session store. In a real app, use a more robust solution like `express-session` with a database.
 const sessions = {};
 
+// Live Direct Messages - feature flag and helpers
+const DM_LIVE = true;
 
 // In-memory DM store (for mock data and live data when available)
 const dmStore = {};
@@ -459,6 +461,7 @@ app.post('/post', async (req, res) => {
   }
 
   // Live Direct Messages (opt-in) - live Bluesky data integration scaffold
+  // Note: Live DM calls are guarded by the DM_LIVE flag, and fall back to mock if not available.
 });
 
 // DM Inbox (live or mock)
@@ -471,14 +474,19 @@ app.get('/dm/inbox', async (req, res) => {
   }
 
   // If live mode is enabled and agent exists, try to refresh from Bluesky
-  if (sessionData.agent) {
-    const liveConvos = await fetchLiveConversations(sessionData.agent);
-    if (Array.isArray(liveConvos) && liveConvos.length > 0) {
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveConvos = await fetchLiveConversations(sessionData.agent);
+      if (Array.isArray(liveConvos) && liveConvos.length > 0) {
         dmStore[sessionId] = { conversations: liveConvos, messages: dmStore[sessionId]?.messages || {} };
+      }
+    } catch (e) {
+      // Fall back to mock if live fetch fails
     }
   }
 
-
+  // Ensure a default structure exists for rendering
+  ensureDmSessionFor(sessionId);
   const convoList = Array.isArray(dmStore[sessionId]?.conversations) ? dmStore[sessionId].conversations : [];
   const convoHtml = convoList.map(c =>
     '<div class="dm-item">' +
@@ -515,8 +523,9 @@ app.get('/dm/conversation', async (req, res) => {
   }
 
   // If live mode is enabled, attempt to fetch live messages for this convo
-  if (sessionData.agent) {
-    const liveMsgs = await fetchLiveMessages(sessionData.agent, dmId);
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveMsgs = await fetchLiveMessages(sessionData.agent, dmId);
       if (Array.isArray(liveMsgs) && liveMsgs.length > 0) {
         dmStore[sessionId] = dmStore[sessionId] || { conversations: [], messages: {} };
         dmStore[sessionId].messages = dmStore[sessionId].messages || {};
@@ -525,6 +534,9 @@ app.get('/dm/conversation', async (req, res) => {
         const conv = (dmStore[sessionId].conversations || []).find(c => c.id === dmId);
         if (conv) conv.lastMessage = liveMsgs[liveMsgs.length - 1]?.text || conv.lastMessage;
       }
+    } catch (e) {
+      // fall back to mock on error
+    }
   }
 
   ensureDmSessionFor(sessionId);
@@ -572,7 +584,9 @@ app.post('/dm/send', async (req, res) => {
 
   ensureDmSessionFor(session);
   // Try live send if enabled
-  const liveResult = await liveSendMessage(sessionData.agent, dm_id, text);
+  if (DM_LIVE && sessionData.agent) {
+    try {
+      const liveResult = await liveSendMessage(sessionData.agent, dm_id, text);
       if (liveResult) {
         dmStore[session] = dmStore[session] || { conversations: [], messages: {} };
         dmStore[session].messages = dmStore[session].messages || {};
@@ -582,6 +596,10 @@ app.post('/dm/send', async (req, res) => {
         if (conv) conv.lastMessage = text;
         return res.redirect(`/dm/conversation?session=${session}&dm_id=${dm_id}`);
       }
+    } catch (e) {
+      // fall back to mock on error
+    }
+  }
 
   // Fallback to mock path
   if (!dmStore[session].messages[dm_id]) {
@@ -603,9 +621,26 @@ app.listen(PORT, () => {
 // Simple in-file helper to ensure a DM session structure exists
 function ensureDmSessionFor(sessionId) {
   if (!dmStore[sessionId]) {
-    dmStore[sessionId] = {
-      conversations: [],
+    if (typeof DM_LIVE !== 'undefined' && DM_LIVE) {
+      dmStore[sessionId] = {
+        conversations: [],
         messages: {}
-    };
+      };
+    } else {
+      dmStore[sessionId] = {
+        conversations: [
+          { id: 'dm_alice', with: 'alice.bsky.social', lastMessage: 'Hey there!', unread: 1 },
+          { id: 'dm_bob', with: 'bob.social', lastMessage: 'Are you coming?', unread: 0 }
+        ],
+        messages: {
+          'dm_alice': [
+            { from: 'alice.bsky.social', text: 'Hello!', ts: new Date().toISOString() }
+          ],
+          'dm_bob': [
+            { from: 'bob.social', text: 'Ping', ts: new Date().toISOString() }
+          ]
+        }
+      };
+    }
   }
 }
