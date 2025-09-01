@@ -50,10 +50,17 @@ app.use('/api/*', async (req, res) => {
     if (endpoint.startsWith('/api/')) endpoint = endpoint.substring('/api/'.length);
     // Normalize trailing slash to avoid 404s
     if (endpoint.endsWith('/')) endpoint = endpoint.slice(0, -1);
-    const tokenHeader = (req.headers['authorization'] || '').toString();
-    const tokenFromHeader = tokenHeader.startsWith('Bearer ') ? tokenHeader.substring(7) : tokenHeader;
-    const cleanEndpoint = endpoint.startsWith('xrpc/') ? endpoint.slice(5) : endpoint;
-    const target = new URL('/xrpc/' + cleanEndpoint, BASE_URL);
+    // Derive upstream path after /xrpc/
+    let upstreamPath = endpoint.startsWith('xrpc/') ? endpoint.substring(5) : endpoint;
+    // Normalize: remove leading slash if present
+    if (upstreamPath.startsWith('/')) upstreamPath = upstreamPath.substring(1);
+    // Remove any trailing slash
+    if (upstreamPath.endsWith('/')) upstreamPath = upstreamPath.slice(0, -1);
+    if (!upstreamPath) {
+      return res.status(400).json({ error: 'invalid_endpoint' });
+    }
+    const target = new URL('/xrpc/' + upstreamPath, BASE_URL);
+    console.info('[proxy] forwarding', req.method, req.url, 'to', target.toString());
 
     // Build proxied request
     const headers = {
@@ -63,9 +70,10 @@ app.use('/api/*', async (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       headers['Content-Type'] = 'application/json';
     }
-    // prefer header token if provided by client
-    const t = tokenFromHeader || TOKEN;
-    if (t) headers['Authorization'] = `Bearer ${t}`;
+    // Authorization: prefer header token if provided by client
+    const tokenHeader = (req.headers['authorization'] || '').toString();
+    const tokenFromHeader = tokenHeader.startsWith('Bearer ') ? tokenHeader.substring(7) : tokenHeader;
+    if (tokenFromHeader) headers['Authorization'] = `Bearer ${tokenFromHeader}`;
 
     const init = {
       method: req.method,
