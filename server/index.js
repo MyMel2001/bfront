@@ -11,6 +11,7 @@ const app = express();
 
 // Configuration
 const BASE_URL = process.env.BLUESKY_BASE_URL || 'https://public.bsky.social';
+const LOGIN_BASE_URL = process.env.LOGIN_BASE_URL || null;
 
 // Middlewares
 app.use(express.json({ limit: '10mb' }));
@@ -23,7 +24,7 @@ app.use('/', express.static(path.join(__dirname, '../public')));
 app.post('/api/login', async (req, res) => {
   try {
     const { identifier, password, baseUrl } = req.body;
-    const authBase = baseUrl || BASE_URL;
+    const authBase = baseUrl || (LOGIN_BASE_URL || BASE_URL);
     const loginUrl = new URL('/xrpc/com.atproto.server.createSession', authBase);
     const init = {
       method: 'POST',
@@ -47,6 +48,8 @@ app.use('/api/*', async (req, res) => {
   try {
     let endpoint = req.path;
     if (endpoint.startsWith('/api/')) endpoint = endpoint.substring('/api/'.length);
+    // Normalize trailing slash to avoid 404s
+    if (endpoint.endsWith('/')) endpoint = endpoint.slice(0, -1);
     const tokenHeader = (req.headers['authorization'] || '').toString();
     const tokenFromHeader = tokenHeader.startsWith('Bearer ') ? tokenHeader.substring(7) : tokenHeader;
     const cleanEndpoint = endpoint.startsWith('xrpc/') ? endpoint.slice(5) : endpoint;
@@ -54,8 +57,12 @@ app.use('/api/*', async (req, res) => {
 
     // Build proxied request
     const headers = {
-      'Content-Type': 'application/json',
+      'Accept': 'application/json'
     };
+    // Only set Content-Type for requests with a body
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      headers['Content-Type'] = 'application/json';
+    }
     // prefer header token if provided by client
     const t = tokenFromHeader || TOKEN;
     if (t) headers['Authorization'] = `Bearer ${t}`;
