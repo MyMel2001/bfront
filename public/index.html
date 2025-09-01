@@ -52,9 +52,25 @@
           <div class="card">
             <label>Base Bluesky API URL</label>
             <input id="baseUrl" value="https://public.bsky.social" />
-            <label>Access Token</label>
-            <input id="token" type="password" placeholder="Bearer token" />
-            <button id="saveConfig">Save</button>
+          </div>
+          <div class="card">
+            <h3>Login (web form)</h3>
+            <label>Identifier (username / email)</label>
+            <input id="loginIdentifier" placeholder="e.g. your_handle or email@example.com" />
+            <label>Password</label>
+            <input id="loginPassword" type="password" placeholder="Password" />
+          </div>
+          <div class="card">
+            <label>Base URL for login (optional)</label>
+            <input id="loginBaseUrl" placeholder="Override base Bluesky URL" />
+          </div>
+          <div class="card">
+            <button id="loginBtn">Login</button>
+            <span id="loginStatus" class="status"></span>
+          </div>
+          <hr/>
+          <div class="card">
+            <p>Stored token (in session/localStorage) will be used for subsequent API requests when present.</p>
           </div>
         </section>
       </main>

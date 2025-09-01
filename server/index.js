@@ -11,7 +11,6 @@ const app = express();
 
 // Configuration
 const BASE_URL = process.env.BLUESKY_BASE_URL || 'https://public.bsky.social';
-const TOKEN = process.env.BLUESKY_ACCESS_TOKEN || '';
 
 // Middlewares
 app.use(express.json({ limit: '10mb' }));
@@ -20,19 +19,46 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static frontend from /public
 app.use('/', express.static(path.join(__dirname, '../public')));
 
- // Simple API proxy: /api/* will be forwarded to Bluesky AT Protocol as /xrpc/*
- app.use('/api/*', async (req, res) => {
-   try {
-     let endpoint = req.path;
-     if (endpoint.startsWith('/api/')) endpoint = endpoint.substring('/api/'.length);
-     const cleanEndpoint = endpoint.startsWith('xrpc/') ? endpoint.slice(5) : endpoint;
-     const target = new URL('/xrpc/' + cleanEndpoint, BASE_URL);
+// Authentication: Bluesky login via web form (username, PDS/baseUrl, password)
+app.post('/api/login', async (req, res) => {
+  try {
+    const { identifier, password, baseUrl } = req.body;
+    const authBase = baseUrl || BASE_URL;
+    const loginUrl = new URL('/xrpc/com.atproto.server.createSession', authBase);
+    const init = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier, password })
+    };
+    const r = await fetch(loginUrl.toString(), init);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return res.status(r.status).json({ error: 'login_failed', details: data });
+    }
+    const token = data?.accessJwt || data?.jwt || '';
+    res.json({ token, handle: data?.handle ?? data?.did ?? '', did: data?.did ?? '', baseUrl: authBase });
+  } catch (err) {
+    res.status(500).json({ error: 'login_error', details: err?.toString?.() });
+  }
+});
 
-     // Build proxied request
-     const headers = {
-       'Content-Type': 'application/json',
-     };
-     if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+// Simple API proxy: /api/* will be forwarded to Bluesky AT Protocol as /xrpc/*
+app.use('/api/*', async (req, res) => {
+  try {
+    let endpoint = req.path;
+    if (endpoint.startsWith('/api/')) endpoint = endpoint.substring('/api/'.length);
+    const tokenHeader = (req.headers['authorization'] || '').toString();
+    const tokenFromHeader = tokenHeader.startsWith('Bearer ') ? tokenHeader.substring(7) : tokenHeader;
+    const cleanEndpoint = endpoint.startsWith('xrpc/') ? endpoint.slice(5) : endpoint;
+    const target = new URL('/xrpc/' + cleanEndpoint, BASE_URL);
+
+    // Build proxied request
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    // prefer header token if provided by client
+    const t = tokenFromHeader || TOKEN;
+    if (t) headers['Authorization'] = `Bearer ${t}`;
 
     const init = {
       method: req.method,

@@ -1,4 +1,5 @@
-// Minimal frontend app.js for Bluesky Alt scaffold
+// Minimal frontend app.js for Bluesky Alt scaffold (login-enabled)
+
 (function(){
   const sections = {
     feeds: document.getElementById('feeds'),
@@ -29,45 +30,133 @@
     document.getElementById('app').classList.toggle('theme-dark');
   });
 
-  // Config persistence
-  function loadConfig(){
-    document.getElementById('baseUrl').value = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
-    document.getElementById('token').value = localStorage.getItem('token') || '';
-  }
-  document.getElementById('saveConfig').addEventListener('click', () => {
-    localStorage.setItem('baseUrl', document.getElementById('baseUrl').value);
-    localStorage.setItem('token', document.getElementById('token').value);
-    // show a simple status
-    const st = document.createElement('div');
-    st.textContent = 'Config saved';
-    st.style.color = '#9ae6b4';
-    document.body.appendChild(st);
-    setTimeout(() => st.remove(), 1500);
-  });
-
-  // API helper
+  // API helper with token from localStorage
   async function api(path, opts){
     const url = '/api/' + path;
-    const res = await fetch(url, {
-      method: (opts && opts.method) || 'GET',
-      headers: Object.assign({'Content-Type': 'application/json'}, (opts && opts.headers) || {}),
-      body: (opts && opts.body) ? JSON.stringify(opts.body) : undefined
-    });
+    const token = localStorage.getItem('token');
+    const headers = Object.assign({'Content-Type':'application/json'}, (opts && opts.headers) || {});
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const init = { method: (opts && opts.method) || 'GET', headers: headers };
+    if (init.method !== 'GET' && init.method !== 'HEAD') {
+      init.body = (opts && opts.body) ? JSON.stringify(opts.body) : undefined;
+    }
+    const res = await fetch(url, init);
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json')) return res.json();
     return res.text();
   }
 
-  // Demo feed: try to fetch real timeline; fall back to mock if errors occur
-  async function fetchFeed(){
+  // Login (web form)
+  async function loginUser(){
+    const identifier = document.getElementById('loginIdentifier')?.value;
+    const password = document.getElementById('loginPassword')?.value;
+    const baseUrl = document.getElementById('loginBaseUrl')?.value;
+    const loginBtnEl = document.getElementById('loginBtn');
+    if (!identifier || !password) { showLoginStatus('Please enter identifier and password'); return; }
+    if (loginBtnEl) loginBtnEl.disabled = true;
+    showLoginStatus('Logging in...');
+  
+    // Attempt frontend AT Protocol API login first
+    let token = '';
+    let libBaseUrl = baseUrl;
     try {
-      const data = await api('xrpc/app.bsky.feed.getTimeline', { method: 'POST', body: {} });
-      renderFeed(data);
-    } catch (e){
-      renderMockFeed();
+      const atprotoModule = await import('@atproto/api');
+      const lib = atprotoModule?.default || atprotoModule;
+      if (lib) {
+        const Client = lib.AppClient || lib.Client || lib.default?.AppClient;
+        if (typeof Client === 'function') {
+          const client = new Client({ service: libBaseUrl || BASE_URL, persistSession: true });
+          const sess = await client.login?.({ identifier, password });
+          token = sess?.jwt || sess?.accessJwt || '';
+        } else if (typeof lib.login === 'function') {
+          const sess = await lib.login({ identifier, password, baseUrl: libBaseUrl || BASE_URL });
+          token = sess?.jwt || sess?.accessJwt || '';
+        } else if (typeof lib.authenticate === 'function') {
+          const sess = await lib.authenticate({ username: identifier, password, baseUrl: libBaseUrl || BASE_URL });
+          token = sess?.jwt || '';
+        }
+      }
+    } catch (err) {
+      // library not available or not usable; fall back to server path
+      console.info('ATProto frontend login not available, falling back to server login:', err?.toString?.());
+    }
+  
+    if (token) {
+      localStorage.setItem('token', token);
+      localStorage.setItem('baseUrl', libBaseUrl || BASE_URL);
+      showLoginStatus('Login successful (via ATProto library)');
+      fetchFeed();
+      show('feeds');
+      if (loginBtnEl) loginBtnEl.disabled = false;
+      return;
+    }
+  
+    // Fallback to existing server-side login
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({identifier, password, baseUrl: libBaseUrl})
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showLoginStatus('Login failed: ' + (data?.error ?? 'unknown'));
+        if (loginBtnEl) loginBtnEl.disabled = false;
+        return;
+      }
+      const token2 = data.token;
+      if (token2) {
+        localStorage.setItem('token', token2);
+        localStorage.setItem('baseUrl', data?.baseUrl || baseUrl || 'https://public.bsky.social');
+        showLoginStatus('Login successful');
+        fetchFeed();
+        show('feeds');
+      } else {
+        showLoginStatus('No token received');
+      }
+      if (loginBtnEl) loginBtnEl.disabled = false;
+    } catch (err) {
+      showLoginStatus('Login error');
+      if (loginBtnEl) loginBtnEl.disabled = false;
     }
   }
 
+  function showLoginStatus(msg){
+    const el = document.getElementById('loginStatus');
+    if (el) {
+      el.textContent = msg;
+      setTimeout(() => { el.textContent = ''; }, 1500);
+    }
+  }
+
+  // Init helpers
+  function loadConfig(){
+    const base = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
+    const token = localStorage.getItem('token') || '';
+    const loginBase = document.getElementById('loginBaseUrl');
+    if (loginBase) loginBase.value = base;
+    const loginIdentifier = document.getElementById('loginIdentifier');
+    // We won't prefill identifier for security
+    if (loginIdentifier) loginIdentifier.value = '';
+    const loginPassword = document.getElementById('loginPassword');
+    if (loginPassword) loginPassword.value = '';
+  }
+  const loginBtn = document.getElementById('loginBtn');
+  if (loginBtn) loginBtn.addEventListener('click', loginUser);
+
+  // Enable Enter-to-login for login fields
+  const loginFields = ['loginIdentifier','loginPassword'];
+  loginFields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        loginUser();
+      }
+    });
+  });
+
+  // Feed rendering
   function renderMockFeed(){
     const feed = document.getElementById('feedList');
     feed.innerHTML = '';
@@ -76,7 +165,7 @@
       {author:'Nebula', text:'Working on a beautiful UI theme', time:'3h'},
       {author:'Roo', text:'API proxy scaffold in progress', time:'5h'}
     ];
-    items.forEach(it=>{
+    items.forEach(it => {
       const c = document.createElement('div');
       c.className = 'card';
       c.innerHTML = `<strong>${it.author}</strong><p>${it.text}</p><small>${it.time} ago</small>`;
@@ -87,19 +176,11 @@
   function renderFeed(payload){
     const feed = document.getElementById('feedList');
     feed.innerHTML = '';
-    // Try to normalize possible payload shapes
     const items = (payload && (payload.timeline && payload.timeline.items)) ||
                   (payload && (payload.feed && payload.feed.items)) ||
-                  (payload && (payload.items)) ||
-                  [];
-
-    if (!items.length){
-      renderMockFeed();
-      return;
-    }
-
+                  (payload && (payload.items)) || [];
+    if (!items.length) { renderMockFeed(); return; }
     items.forEach(it=>{
-      // Support a couple common shapes
       const author = it.author?.name || it.author || 'Unknown';
       const text = it.post?.record?.text || it.text || JSON.stringify(it);
       const time = it.post?.indexed_at?.toString?.() || 'now';
@@ -110,7 +191,16 @@
     });
   }
 
-  // Composer: Post
+  async function fetchFeed(){
+    try {
+      const data = await api('xrpc/app.bsky.feed.getTimeline', { method:'POST', body: {} });
+      renderFeed(data);
+    } catch(err){
+      renderMockFeed();
+    }
+  }
+
+  // Post composer
   const postBtn = document.getElementById('postBtn');
   const postContent = document.getElementById('postContent');
   const postStatus = document.getElementById('postStatus');
@@ -120,14 +210,10 @@
       if (!text) return;
       postStatus.textContent = 'Posting...';
       try {
-        const res = await api('xrpc/app.bsky.feed.post', {
-          method: 'POST',
-          body: { text }
-        });
+        await api('xrpc/app.bsky.feed.post', { method:'POST', body: { text } });
         postStatus.textContent = 'Posted';
         postContent.value = '';
         setTimeout(()=> postStatus.textContent = '', 1500);
-        // refresh feed after post
         fetchFeed();
       } catch (e){
         postStatus.textContent = 'Post failed';
@@ -136,13 +222,13 @@
     });
   }
 
-  // DM: simple local storage chat
+  // DM: simple local messages
   function loadDMs(){
-    const list = document.getElementById('dmList');
-    list.innerHTML = '';
+    const dmList = document.getElementById('dmList');
+    if (!dmList) return;
+    dmList.innerHTML = '';
     const messages = JSON.parse(localStorage.getItem('messages') || '[]');
     if (!messages.length){
-      // seed with a couple
       const seed = [
         {id:'alice', name:'Alice', last:'Hey there!', ts:new Date().toISOString()},
         {id:'bro', name:'Bro', last:'What are you up to?', ts:new Date().toISOString()}
@@ -155,12 +241,11 @@
       card.className = 'card';
       card.innerHTML = `<strong>${m.name}</strong><p>${m.last}</p><small>${new Date(m.ts).toLocaleTimeString()}</small>`;
       card.addEventListener('click', () => openChat(m.id, m.name));
-      list.appendChild(card);
+      dmList.appendChild(card);
     });
   }
 
   function openChat(contactId, contactName){
-    // create a simple chat panel inside DM section
     const dmSection = document.getElementById('dm');
     dmSection.innerHTML = '<h2>Direct Messages</h2>';
     const chat = document.createElement('div');
@@ -168,7 +253,6 @@
     chat.style.display = 'flex';
     chat.style.flexDirection = 'column';
     chat.style.gap = '8px';
-    // load chat history
     const history = JSON.parse(localStorage.getItem('chat_' + contactId) || '[]');
     history.forEach(h => {
       const b = document.createElement('div');
@@ -188,7 +272,6 @@
       const text = ta.value.trim();
       if (!text) return;
       const msg = { text, ts: new Date().toISOString(), from: 'me' };
-      // append to history and save
       history.push(msg);
       localStorage.setItem('chat_' + contactId, JSON.stringify(history));
       const el = document.createElement('div');
@@ -197,7 +280,6 @@
       el.innerHTML = `<div>${text}</div><small>${new Date().toLocaleTimeString()}</small>`;
       chat.appendChild(el);
       ta.value = '';
-      // simulate reply
       setTimeout(() => {
         const reply = { text: 'Nice!', ts: new Date().toISOString(), from: contactName };
         history.push({ text: reply.text, ts: reply.ts, from: contactName });
@@ -211,36 +293,41 @@
     });
     composer.appendChild(ta);
     composer.appendChild(send);
-
     dmSection.appendChild(chat);
     dmSection.appendChild(composer);
     show('dm');
   }
 
-  // Profile: basic view with editable name
-  const profileView = document.getElementById('profileView');
+  // Profile: basic editable
+  const profileContainer = document.getElementById('profileView');
   function renderProfile(){
     const name = localStorage.getItem('displayName') || 'You';
     const handle = localStorage.getItem('handle') || '@you';
-    profileView.innerHTML = `
-      <div class="card">
-        <h3>Profile</h3>
-        <p>Name: <input id="nameInput" value="${name}" style="width:60%"/></p>
-        <p>Handle: <input id="handleInput" value="${handle}" style="width:60%"/></p>
-        <button id="saveProfile">Save</button>
-      </div>`;
-    document.getElementById('saveProfile')?.addEventListener('click', () => {
-      const n = document.getElementById('nameInput').value;
-      const h = document.getElementById('handleInput').value;
-      localStorage.setItem('displayName', n);
-      localStorage.setItem('handle', h);
-    });
+    if (profileContainer){
+      profileContainer.innerHTML = `
+        <div class="card">
+          <h3>Profile</h3>
+          <p>Name: <input id="nameInput" value="${name}" style="width:60%"/></p>
+          <p>Handle: <input id="handleInput" value="${handle}" style="width:60%"/></p>
+          <button id="saveProfile">Save</button>
+        </div>`;
+      const saveBtn = document.getElementById('saveProfile');
+      if (saveBtn){
+        saveBtn.addEventListener('click', () => {
+          const n = document.getElementById('nameInput').value;
+          const h = document.getElementById('handleInput').value;
+          localStorage.setItem('displayName', n);
+          localStorage.setItem('handle', h);
+        });
+      }
+    }
   }
 
-  // PDS: basic config display
   function renderPDS(){
-    document.getElementById('baseUrl').value = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
-    document.getElementById('token').value = localStorage.getItem('token') || '';
+    const baseUrlInput = document.getElementById('baseUrl');
+    if (baseUrlInput){
+      baseUrlInput.value = localStorage.getItem('baseUrl') || 'https://public.bsky.social';
+    }
   }
 
   // Init
@@ -250,10 +337,7 @@
   loadDMs();
   fetchFeed();
   show('feeds');
-  // Add tests for post links to ensure visibility
   document.addEventListener('visibilitychange', () => {
-    // refresh feeds when tab becomes visible to simulate live updates
     if (document.visibilityState === 'visible') fetchFeed();
   });
-
-})();
+})()
