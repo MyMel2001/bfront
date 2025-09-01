@@ -474,19 +474,14 @@ app.get('/dm/inbox', async (req, res) => {
   }
 
   // If live mode is enabled and agent exists, try to refresh from Bluesky
-  if (DM_LIVE && sessionData.agent) {
-    try {
-      const liveConvos = await fetchLiveConversations(sessionData.agent);
-      if (Array.isArray(liveConvos) && liveConvos.length > 0) {
+  if (sessionData.agent) {
+    const liveConvos = await fetchLiveConversations(sessionData.agent);
+    if (Array.isArray(liveConvos) && liveConvos.length > 0) {
         dmStore[sessionId] = { conversations: liveConvos, messages: dmStore[sessionId]?.messages || {} };
-      }
-    } catch (e) {
-      // Fall back to mock if live fetch fails
     }
   }
 
-  // Ensure a default structure exists for rendering
-  ensureDmSessionFor(sessionId);
+  
   const convoList = Array.isArray(dmStore[sessionId]?.conversations) ? dmStore[sessionId].conversations : [];
   const convoHtml = convoList.map(c =>
     '<div class="dm-item">' +
