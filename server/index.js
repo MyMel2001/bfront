@@ -1,4 +1,3 @@
-
 const express = require('express');
 const { BskyAgent, RichText } = require('@atproto/api');
 const path = require('path');
@@ -175,10 +174,9 @@ app.get('/', (req, res) => {
 
 // Login and redirect to feed
 app.post('/login', async (req, res) => {
-  const { identifier, password, service } = req.body;
-  const agent = new BskyAgent({ service });
-
   try {
+    const { identifier, password, service } = req.body;
+    const agent = new BskyAgent({ service });
     const loginResult = await agent.login({ identifier, password });
     // Try to resolve current user DID from the login result
     let resolvedDid = null;
