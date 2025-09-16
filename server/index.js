@@ -228,6 +228,60 @@ app.get('/', (req, res) => {
   res.send(createHtmlResponse('Login to Bluesky', loginHtml));
 });
 
+// Auto-login endpoint for remembered credentials
+app.post('/auto-login', express.json(), async (req, res) => {
+  try {
+    const { username, token, refresh, did, service } = req.body;
+    
+    if (!username || !token || !service) {
+      return res.json({ success: false, error: 'Missing required credentials' });
+    }
+    
+    // Create agent with service
+    const agent = new BskyAgent({ service });
+    
+    // Set the tokens directly (bypassing login)
+    agent.session = {
+      accessJwt: token,
+      refreshJwt: refresh,
+      handle: username,
+      did: did
+    };
+    
+    // Test if the tokens are still valid by trying to get the timeline
+    try {
+      await agent.getTimeline({ limit: 1 });
+    } catch (err) {
+      // If we get an auth error, the tokens are invalid
+      if (err.status === 401 || (err.message && err.message.includes('Token'))) {
+        return res.json({ success: false, error: 'Invalid or expired tokens' });
+      }
+      // For other errors, we'll assume the tokens are still valid
+    }
+    
+    // Store session and redirect
+    const sessionId = Math.random().toString(36).substring(7);
+    
+    // Prepare credentials for localStorage (in case they need to be updated)
+    const creds = {
+      username: username,
+      token: token,
+      refresh: refresh,
+      did: did,
+      service: service
+    };
+    
+    sessions[sessionId] = { agent, session: agent.session, creds };
+    
+    const redirectUrl = `/feed?session=${sessionId}`;
+    
+    res.json({ success: true, redirectUrl });
+  } catch (err) {
+    console.error('Auto-login error:', err);
+    res.json({ success: false, error: 'Failed to auto-login' });
+  }
+});
+
 // Login and redirect to feed
 app.post('/login', async (req, res) => {
   try {

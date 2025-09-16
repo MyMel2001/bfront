@@ -39,9 +39,30 @@ function loadValidCreds() {
 function checkAndRedirect() {
   const creds = loadValidCreds();
   if (creds) {
-    // We have valid credentials, but we need to create a session on the server
-    // This would typically be handled by the server, but we can show a message
-    // or automatically redirect to a login endpoint that creates a session
+    // We have valid credentials, send them to the server to create a session
+    fetch('/auto-login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(creds)
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        window.location.href = data.redirectUrl;
+      } else {
+        // Clear invalid credentials and redirect to login
+        clearCreds();
+        window.location.href = '/';
+      }
+    })
+    .catch(error => {
+      console.error('Auto-login error:', error);
+      // Clear credentials and redirect to login
+      clearCreds();
+      window.location.href = '/';
+    });
   }
 }
 
@@ -56,4 +77,6 @@ window.BskyStorage = {
 // Auto-save credentials if they're passed from the server
 document.addEventListener('DOMContentLoaded', function() {
   // This will be handled by the server-side script injection
+  // Check for saved credentials and redirect if valid
+  checkAndRedirect();
 });
