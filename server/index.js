@@ -1,11 +1,43 @@
 const express = require('express');
 const { BskyAgent, RichText } = require('@atproto/api');
 const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 const app = express();
 const PORT = 2679;
 
+// Set up multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/')
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname))
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  // Accept images only
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.static('public'));
+app.use('/uploads', express.static('uploads'));
 
 // A simple session store. In a real app, use a more robust solution like `express-session` with a database.
 const sessions = {};
@@ -146,10 +178,25 @@ function createHtmlResponse(title, bodyHtml) {
       .search-result:last-child {
         border-bottom: none;
       }
+      .post-image {
+        max-width: 100%;
+        border-radius: 8px;
+        margin-top: 0.5rem;
+      }
+      .reply-form {
+        margin-top: 1rem;
+        padding: 1rem;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+      }
+      .reply-form input[type="file"] {
+        margin: 0.5rem 0;
+      }
     </style>
   </head>
   <body>
     ${bodyHtml}
+    <script src="/client.js"></script>
   </body>
   </html>
   `;
@@ -165,6 +212,9 @@ app.get('/', (req, res) => {
         <input type="text" name="identifier" placeholder="Handle or Email" required>
         <input type="password" name="password" placeholder="App Password" required>
         <input type="text" name="service" placeholder="PDS Service URL (e.g., https://bsky.social)" value="https://bsky.social" required>
+        <label>
+          <input type="checkbox" name="remember" value="true"> Remember me
+        </label>
         <button type="submit">Login</button>
       </form>
     </div>
@@ -175,7 +225,7 @@ app.get('/', (req, res) => {
 // Login and redirect to feed
 app.post('/login', async (req, res) => {
   try {
-    const { identifier, password, service } = req.body;
+    const { identifier, password, service, remember } = req.body;
     const agent = new BskyAgent({ service });
     const loginResult = await agent.login({ identifier, password });
     // Try to resolve current user DID from the login result
@@ -195,8 +245,24 @@ app.post('/login', async (req, res) => {
 
     // Store session and redirect
     const sessionId = Math.random().toString(36).substring(7);
-    sessions[sessionId] = { agent, session: loginResult };
-    res.redirect(`/feed?session=${sessionId}`);
+    
+    // Prepare credentials for localStorage
+    const creds = {
+      username: identifier,
+      token: loginResult.accessJwt,
+      refresh: loginResult.refreshJwt,
+      did: resolvedDid,
+      service: service
+    };
+    
+    sessions[sessionId] = { agent, session: loginResult, creds };
+    
+    // If "remember me" is checked, pass parameter to feed page to save credentials to localStorage
+    const redirectUrl = remember === 'true'
+      ? `/feed?session=${sessionId}&saveCreds=true`
+      : `/feed?session=${sessionId}`;
+    
+    res.redirect(redirectUrl);
   } catch (err) {
     console.error('Login error:', err);
     const errorHtml = `
@@ -219,13 +285,17 @@ app.get('/feed', async (req, res) => {
     return res.redirect('/');
   }
 
-  const { agent, session } = sessionData;
+  const { agent, session, creds } = sessionData;
 
   try {
     // Get the main feed for the logged-in user
     const feedResponse = await agent.getTimeline();
     const feedPosts = Array.isArray(feedResponse?.data?.feed) ? feedResponse.data.feed : [];
 
+    // Check if we should save credentials to localStorage
+    const saveToLocalStorage = req.query.saveCreds === 'true';
+    const credsJson = creds ? JSON.stringify(creds) : 'null';
+    
     let feedHtml = `
       <div class="container">
         <h1>Bluesky Feed</h1>
@@ -233,14 +303,27 @@ app.get('/feed', async (req, res) => {
         <nav style="display: flex; gap: 1rem; margin-bottom: 1rem;">
           <a href="/feed?session=${sessionId}">My Feed</a>
           <a href="/search-users?session=${sessionId}">Find Users</a>
+          <a href="/logout?session=${sessionId}">Logout</a>
         </nav>
-        <form action="/post" method="post" style="margin-bottom: 2rem;">
+        <form action="/post" method="post" enctype="multipart/form-data" style="margin-bottom: 2rem;">
           <input type="hidden" name="session" value="${sessionId}">
           <textarea name="postText" placeholder="What's on your mind? Mention users with @handle." rows="4" required></textarea>
+          <input type="file" name="image" accept="image/*">
           <button type="submit">Post</button>
         </form>
         <div id="feed-container">
     `;
+    
+    // Add script to save credentials to localStorage if requested
+    if (saveToLocalStorage && creds) {
+      feedHtml += `
+        <script>
+          if (typeof BskyStorage !== 'undefined') {
+            BskyStorage.saveCreds(${credsJson});
+          }
+        </script>
+      `;
+    }
 
     // Render each post
     for (const item of feedPosts) {
@@ -273,11 +356,62 @@ app.get('/feed', async (req, res) => {
         }).join('');
       }
 
+      // Check if post has images
+      let imageHtml = '';
+      if (post?.embed?.images) {
+        for (const img of post.embed.images) {
+          // Check if it's a GIF or other animated format
+          const isGif = img.fullsize?.includes('.gif') || img.thumb?.includes('.gif');
+          if (isGif) {
+            imageHtml += `<img src="${img.fullsize}" alt="${img.alt}" class="post-image" style="max-height: 400px;">`;
+          } else {
+            imageHtml += `<img src="${img.fullsize}" alt="${img.alt}" class="post-image">`;
+          }
+        }
+      } else if (post?.embed?.media?.images) {
+        for (const img of post.embed.media.images) {
+          // Check if it's a GIF or other animated format
+          const isGif = img.fullsize?.includes('.gif') || img.thumb?.includes('.gif');
+          if (isGif) {
+            imageHtml += `<img src="${img.fullsize}" alt="${img.alt}" class="post-image" style="max-height: 400px;">`;
+          } else {
+            imageHtml += `<img src="${img.fullsize}" alt="${img.alt}" class="post-image">`;
+          }
+        }
+      }
+      
+      // Check if post is a reply
+      let replyHtml = '';
+      if (post?.record?.reply) {
+        // Try to get parent post information
+        try {
+          const parentUri = post.record.reply.parent.uri;
+          // Extract handle from URI if possible
+          const uriParts = parentUri.split('/');
+          const handle = uriParts[uriParts.length - 1];
+          replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${handle}">@${handle}</a></p>`;
+        } catch (e) {
+          replyHtml = `<p class="post-reply">Replying to a post</p>`;
+        }
+      }
+      
       feedHtml += `
         <div class="feed-post">
           <p>${authorLinkHtml}</p>
+          ${replyHtml}
           <p class="post-text">${textWithMentions}</p>
+          ${imageHtml}
           <p class="post-timestamp">${new Date(post?.record?.createdAt).toLocaleString()}</p>
+          <div class="reply-form">
+            <form action="/reply" method="post" enctype="multipart/form-data">
+              <input type="hidden" name="session" value="${sessionId}">
+              <input type="hidden" name="parentUri" value="${post.uri}">
+              <input type="hidden" name="parentCid" value="${post.cid}">
+              <textarea name="replyText" placeholder="Write your reply..." rows="2"></textarea>
+              <input type="file" name="image" accept="image/*">
+              <button type="submit">Reply</button>
+            </form>
+          </div>
         </div>
       `;
     }
@@ -387,7 +521,7 @@ app.get('/search-users', async (req, res) => {
 });
 
 // Direct Messages (live data integration scaffold) and mock fallback
-app.post('/post', async (req, res) => {
+app.post('/post', upload.single('image'), async (req, res) => {
   const { session, postText } = req.body;
   const sessionData = sessions[session];
 
@@ -402,16 +536,191 @@ app.post('/post', async (req, res) => {
     const rt = new RichText({ text: postText });
     await rt.detectFacets(agent); // This resolves handles to DIDs for tagging
 
-    await agent.post({
+    // Handle image upload if present
+    let postParams = {
       text: rt.text,
       facets: rt.facets,
-    });
+    };
+
+    if (req.file) {
+      // Read the image file
+      const imageBuffer = fs.readFileSync(req.file.path);
+      
+      // Determine the correct MIME type
+      let mimeType = req.file.mimetype;
+      if (req.file.originalname.toLowerCase().endsWith('.gif')) {
+        mimeType = 'image/gif';
+      } else if (req.file.originalname.toLowerCase().endsWith('.png')) {
+        mimeType = 'image/png';
+      } else if (req.file.originalname.toLowerCase().endsWith('.jpg') || req.file.originalname.toLowerCase().endsWith('.jpeg')) {
+        mimeType = 'image/jpeg';
+      }
+      
+      // Upload the image to Bluesky
+      const imageUpload = await agent.uploadBlob(imageBuffer, {
+        encoding: mimeType
+      });
+      
+      // Add the image to the post
+      postParams.embed = {
+        $type: 'app.bsky.embed.images',
+        images: [{
+          alt: req.file.originalname,
+          image: imageUpload.data.blob,
+          aspectRatio: {
+            width: 1,
+            height: 1
+          }
+        }]
+      };
+    }
+
+    await agent.post(postParams);
+    
+    // Remove the temporary file
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    
     res.redirect(`/feed?session=${session}`);
   } catch (err) {
     console.error('Post error:', err);
+    
+    // Remove the temporary file if there was an error
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    // Handle multer errors specifically
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).send(createHtmlResponse('Error', `<p class="error-message">File too large. Maximum file size is 10MB. Please <a href="/feed?session=${session}">try again</a>.</p>`));
+      }
+    } else if (err.message === 'Only image files are allowed!') {
+      return res.status(400).send(createHtmlResponse('Error', `<p class="error-message">Only image files are allowed! Please <a href="/feed?session=${session}">try again</a>.</p>`));
+    }
+    
     res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not create post. Please <a href="/feed?session=${session}">try again</a>.</p>`));
   }
 
+});
+
+// Reply route
+app.post('/reply', upload.single('image'), async (req, res) => {
+  const { session, parentUri, parentCid, replyText } = req.body;
+  const sessionData = sessions[session];
+
+  if (!sessionData) {
+    return res.redirect('/');
+  }
+
+  const { agent } = sessionData;
+
+  try {
+    // Create a RichText object to automatically detect mentions
+    const rt = new RichText({ text: replyText });
+    await rt.detectFacets(agent); // This resolves handles to DIDs for tagging
+
+    // Handle image upload if present
+    let postParams = {
+      text: rt.text,
+      facets: rt.facets,
+      reply: {
+        root: {
+          uri: parentUri,
+          cid: parentCid
+        },
+        parent: {
+          uri: parentUri,
+          cid: parentCid
+        }
+      }
+    };
+
+    if (req.file) {
+      // Read the image file
+      const imageBuffer = fs.readFileSync(req.file.path);
+      
+      // Determine the correct MIME type
+      let mimeType = req.file.mimetype;
+      if (req.file.originalname.toLowerCase().endsWith('.gif')) {
+        mimeType = 'image/gif';
+      } else if (req.file.originalname.toLowerCase().endsWith('.png')) {
+        mimeType = 'image/png';
+      } else if (req.file.originalname.toLowerCase().endsWith('.jpg') || req.file.originalname.toLowerCase().endsWith('.jpeg')) {
+        mimeType = 'image/jpeg';
+      }
+      
+      // Upload the image to Bluesky
+      const imageUpload = await agent.uploadBlob(imageBuffer, {
+        encoding: mimeType
+      });
+      
+      // Add the image to the post
+      postParams.embed = {
+        $type: 'app.bsky.embed.images',
+        images: [{
+          alt: req.file.originalname,
+          image: imageUpload.data.blob,
+          aspectRatio: {
+            width: 1,
+            height: 1
+          }
+        }]
+      };
+    }
+
+    await agent.post(postParams);
+    
+    // Remove the temporary file
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.redirect(`/feed?session=${session}`);
+  } catch (err) {
+    console.error('Reply error:', err);
+    
+    // Remove the temporary file if there was an error
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    // Handle multer errors specifically
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).send(createHtmlResponse('Error', `<p class="error-message">File too large. Maximum file size is 10MB. Please <a href="/feed?session=${session}">try again</a>.</p>`));
+      }
+    } else if (err.message === 'Only image files are allowed!') {
+      return res.status(400).send(createHtmlResponse('Error', `<p class="error-message">Only image files are allowed! Please <a href="/feed?session=${session}">try again</a>.</p>`));
+    }
+    
+    res.status(500).send(createHtmlResponse('Error', `<p class="error-message">Could not create reply. Please <a href="/feed?session=${session}">try again</a>.</p>`));
+  }
+});
+
+// Logout route
+app.get('/logout', (req, res) => {
+  const sessionId = req.query.session;
+  if (sessionId && sessions[sessionId]) {
+    delete sessions[sessionId];
+  }
+  
+  // Redirect to login page with a script to clear localStorage
+  const logoutHtml = `
+    <div class="container">
+      <h1>Logged Out</h1>
+      <p>You have been successfully logged out.</p>
+      <a href="/">Login again</a>
+    </div>
+    <script>
+      if (typeof BskyStorage !== 'undefined') {
+        BskyStorage.clearCreds();
+      }
+    </script>
+  `;
+  
+  res.send(createHtmlResponse('Logged Out', logoutHtml));
 });
 
 
