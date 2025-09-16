@@ -192,6 +192,12 @@ function createHtmlResponse(title, bodyHtml) {
       .reply-form input[type="file"] {
         margin: 0.5rem 0;
       }
+      .reply-form label {
+        font-size: 0.9rem;
+        color: #4a5568;
+        margin: 0.5rem 0 0.25rem 0;
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -389,7 +395,26 @@ app.get('/feed', async (req, res) => {
           // Extract handle from URI if possible
           const uriParts = parentUri.split('/');
           const handle = uriParts[uriParts.length - 1];
-          replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${handle}">@${handle}</a></p>`;
+          // Check if it looks like a DID or a handle
+          if (handle.startsWith('did:')) {
+            // Try to resolve DID to handle with a timeout
+            try {
+              // Add a timeout to prevent hanging
+              const profilePromise = agent.getProfile({ actor: handle });
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout')), 3000)
+              );
+              const profile = await Promise.race([profilePromise, timeoutPromise]);
+              const resolvedHandle = profile.data.handle;
+              replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${resolvedHandle}">@${resolvedHandle}</a></p>`;
+            } catch (profileErr) {
+              // If we can't resolve the DID, show a shortened version
+              const shortDid = handle.length > 15 ? handle.substring(0, 12) + '...' : handle;
+              replyHtml = `<p class="post-reply">Replying to: ${shortDid}</p>`;
+            }
+          } else {
+            replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${handle}">@${handle}</a></p>`;
+          }
         } catch (e) {
           replyHtml = `<p class="post-reply">Replying to a post</p>`;
         }
@@ -408,7 +433,8 @@ app.get('/feed', async (req, res) => {
               <input type="hidden" name="parentUri" value="${post.uri}">
               <input type="hidden" name="parentCid" value="${post.cid}">
               <textarea name="replyText" placeholder="Write your reply..." rows="2"></textarea>
-              <input type="file" name="image" accept="image/*">
+              <label for="reply-image-${post.cid}">Attach an image:</label>
+              <input type="file" name="image" id="reply-image-${post.cid}" accept="image/*">
               <button type="submit">Reply</button>
             </form>
           </div>
