@@ -401,11 +401,8 @@ app.get('/feed', async (req, res) => {
             try {
               // Add a timeout to prevent hanging
               const profilePromise = await agent.getProfile({ actor: handle });
-              const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Timeout')), 3000)
-              );
-              const profile = await Promise.race([profilePromise, timeoutPromise]);
-              const resolvedHandle = profilePromise?.data?.handle;
+              const profile = await profileResponse.data;
+              const resolvedHandle = profile.handle;
               replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${resolvedHandle}">@${resolvedHandle}</a></p>`;
             } catch (profileErr) {
               // If we can't resolve the DID, show a shortened version
