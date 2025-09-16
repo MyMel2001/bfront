@@ -390,31 +390,8 @@ app.get('/feed', async (req, res) => {
       let replyHtml = '';
       if (post?.record?.reply) {
         // Try to get parent post information
-        try {
-          const parentUri = post.record.reply.parent.uri;
-          // Extract handle from URI if possible
-          const uriParts = parentUri.split('/');
-          const handle = uriParts[uriParts.length - 1];
-          // Check if it looks like a DID or a handle
-          if (handle.startsWith('did:')) {
-            // Try to resolve DID to handle with a timeout
-            try {
-              // Add a timeout to prevent hanging
-              const profilePromise = await agent.getProfile({ actor: handle });
-              const profile = await profilePromise.data;
-              const resolvedHandle = await profile.handle;
-              replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${resolvedHandle}">@${resolvedHandle}</a></p>`;
-            } catch (profileErr) {
-              // If we can't resolve the DID, show a shortened version
-              const shortDid = handle.length > 15 ? handle.substring(0, 12) + '...' : handle;
-              replyHtml = `<p class="post-reply">Replying to: ${shortDid}</p>`;
-            }
-          } else {
-            replyHtml = `<p class="post-reply">Replying to: <a href="/profile?session=${sessionId}&handle=${handle}">@${handle}</a></p>`;
-          }
-        } catch (e) {
-          replyHtml = `<p class="post-reply">Replying to a post</p>`;
-        }
+        post?.record?.reply
+        replyHtml = `<p class="post-reply">Replying to a post</p>`;
       }
       
       feedHtml += `
